@@ -1,5 +1,7 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-from torch.utils.data import Dataset
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+from transformers import AutoTokenizer,AutoModelForCausalLM, pipeline
 import numpy as np
 import os
 import os.path
@@ -12,42 +14,13 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import sys
 import time
+from lmdata import LMData
 
-DATA_PATH = 'clsapluscodes.txt'
+DATA_PATH = 'example.txt'
 MODEL = 'gpt2-medium'
-EXP_NAME = 'robocanon1'
+EXP_NAME = 'lmexample1'
 
 #Creates pairs of sequences (X,Y) XY is a coherent string
-class LMData(Dataset):
-    def __init__(self,textPath,tokenizer,kernel_size=256,stride=128):
-        self.kernel_size = kernel_size
-        self.stride = stride
-        with open(textPath) as x: self.text = x.read()
-        self.tokens = []
-        for i in range(self.get_length(self.text,self.kernel_size,self.kernel_size)):
-            cur_text = self.get_independent_window(self.text,i,self.kernel_size,self.kernel_size)
-            cur_tokens = tokenizer(cur_text)
-            self.tokens.extend(cur_tokens['input_ids'])
-        self.tokens = np.array(self.tokens)
-        
-    def get_independent_window(self,iterable,i,kernel_size,stride):
-        return iterable[stride*i:(stride*i+kernel_size)]
-        
-    def get_length(self,iterable,kernel_size,stride):
-        return ((len(iterable) - kernel_size)// stride)
-        
-    
-    def __getitem__(self,i):
-        cur_tokens = self.get_independent_window(self.tokens,i,self.kernel_size+1,self.stride)
-        X = cur_tokens[:self.kernel_size]
-        Y = cur_tokens[1:(self.kernel_size+1)]
-        return(X,Y)
-    
-    def __len__(self):
-        #Usually + 1, but we want to generate two sequences every time!
-        return self.get_length(self.tokens,self.kernel_size+1,self.stride)
-
-
 
 def _init_(exp_name):
     if not os.path.exists('checkpoints'):
@@ -57,9 +30,9 @@ def _init_(exp_name):
     if not os.path.exists('checkpoints/'+ exp_name+'/'+'models'):
         os.makedirs('checkpoints/'+ exp_name+'/'+'models')
 
-def train(exp_name):
-    train_dataset = LMData(DATA_PATH,tokenizer)
-    train_loader = DataLoader(train_dataset,num_workers=8,batch_size=2, shuffle=True, drop_last=True)
+def train(exp_name,tokens):
+    train_dataset = LMData(tokens)
+    train_loader = DataLoader(train_dataset,num_workers=64,batch_size=32, shuffle=True, drop_last=True)
 
     #model = DistilBertForMaskedLM.from_pretrained(MODEL).cuda()
     device = 0
@@ -100,6 +73,7 @@ def train(exp_name):
                 output = model(input_ids=before,labels=after)
                 logits = output['logits']
                 loss = output['loss']
+                loss = torch.mean(loss)
             losses.append(loss.detach().cpu().numpy())
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -125,15 +99,16 @@ def train(exp_name):
         #VALIDATE
         with torch.no_grad():
             model.eval()
-            for i in range(3):
                 #outputs = model.generate('In ',do_sample=True, max_length=60, pad_token_id=50256)
-                print(generator('In ',pad_token_id=50256, num_return_sequences=3,max_length=50))
+            print(generator('In ',pad_token_id=50256, num_return_sequences=3,max_length=50))
                 #print(tokenizer.batch_decode(outputs, skip_special_tokens=True))
         #break
         print('Epoch {0} Time: {1}'.format(epoch,time.time() - t))
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL)
-model = AutoModelForCausalLM.from_pretrained(MODEL).cuda()
-generator = pipeline(task="text-generation", model=model, tokenizer=tokenizer,device=0)
+tokens = np.load('tokens.npz')['tokens']
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL,device_map='auto')
+model = AutoModelForCausalLM.from_pretrained(MODEL,device_map='auto')
+generator = pipeline(task="text-generation", model=model, tokenizer=tokenizer)
 _init_(EXP_NAME)
-train(EXP_NAME)
+train(EXP_NAME,tokens)
